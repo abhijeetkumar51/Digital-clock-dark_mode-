@@ -1,0 +1,341 @@
+import javax.swing.*;
+import javax.swing.filechooser.FileNameExtensionFilter;
+import java.awt.*;
+import java.awt.event.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+
+/**
+ * AdvancedDigitalClock
+ * - Toggle 12/24 hour format
+ * - Load custom TTF font
+ * - Blinking colon + date fade animation
+ * - Fullscreen toggle
+ * - Widget mode (undecorated, alwaysOnTop, draggable)
+ * - Dark / Light theme toggle
+ *
+ * Single-file runnable Swing application.
+ */
+public class AdvancedDigitalClock extends JFrame {
+
+    private JLabel timeLabel;
+    private JLabel dateLabel;
+    private JPanel controlPanel;
+
+    private boolean is24Hour = false;
+    private boolean colonVisible = true;
+    private boolean animationOn = true;
+    private boolean fullscreen = false;
+    private boolean widgetMode = false;
+    private boolean darkMode = true;
+
+    private DateTimeFormatter timeFormat12 = DateTimeFormatter.ofPattern("hh:mm:ss a");
+    private DateTimeFormatter timeFormat24 = DateTimeFormatter.ofPattern("HH:mm:ss");
+    private DateTimeFormatter dateFormat = DateTimeFormatter.ofPattern("dd-MM-yyyy");
+
+    private Font clockFont = new Font("Consolas", Font.BOLD, 64);
+    private Timer clockTimer;        // updates every 1s
+    private Timer animationTimer;    // small ticks for animations (blink/fade)
+
+    // For date fade animation
+    private float dateAlpha = 1.0f;
+    private float dateAlphaDelta = -0.02f; // oscillates between ~0.4 and 1.0
+
+    // For dragging widget
+    private Point dragOffset = new Point();
+
+    public AdvancedDigitalClock() {
+        super("Advanced Digital Clock");
+        initUI();
+        initTimers();
+        pack();
+        setLocationRelativeTo(null);
+        setVisible(true);
+    }
+
+    private void initUI() {
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setLayout(new BorderLayout());
+        setPreferredSize(new Dimension(520, 260));
+
+        // Root panel with dark background
+        JPanel root = new JPanel(new BorderLayout());
+        applyTheme(root, darkMode);
+        add(root, BorderLayout.CENTER);
+
+        // Time label
+        timeLabel = new JLabel("", SwingConstants.CENTER);
+        timeLabel.setFont(clockFont.deriveFont(64f));
+        timeLabel.setOpaque(false);
+        timeLabel.setForeground(Color.WHITE);
+        root.add(timeLabel, BorderLayout.CENTER);
+
+        // Date label (will fade)
+        dateLabel = new JLabel("", SwingConstants.CENTER);
+        dateLabel.setFont(clockFont.deriveFont(20f));
+        dateLabel.setOpaque(false);
+        dateLabel.setForeground(Color.LIGHT_GRAY);
+        root.add(dateLabel, BorderLayout.SOUTH);
+
+        // Controls panel
+        controlPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 6));
+        controlPanel.setOpaque(false);
+        addControlButtons();
+        add(controlPanel, BorderLayout.SOUTH);
+
+        // Keybindings
+        setupKeyBindings();
+
+        // Mouse listeners used when in widget mode (dragging)
+        addWidgetDragSupport();
+    }
+
+    private void applyTheme(JComponent c, boolean dark) {
+        if (dark) {
+            c.setBackground(new Color(18, 18, 18));
+            c.setForeground(Color.WHITE);
+        } else {
+            c.setBackground(Color.WHITE);
+            c.setForeground(Color.DARK_GRAY);
+        }
+    }
+
+    private void addControlButtons() {
+        JButton toggleFormatBtn = new JButton("Toggle 12/24");
+        toggleFormatBtn.addActionListener(e -> {
+            is24Hour = !is24Hour;
+            updateTimeNow();
+        });
+
+        JButton toggleAnimBtn = new JButton("Toggle Anim");
+        toggleAnimBtn.addActionListener(e -> animationOn = !animationOn);
+
+        JButton fullscreenBtn = new JButton("Fullscreen");
+        fullscreenBtn.addActionListener(e -> toggleFullscreen());
+
+        JButton widgetBtn = new JButton("Widget Mode");
+        widgetBtn.addActionListener(e -> toggleWidgetMode());
+
+        JButton loadFontBtn = new JButton("Load Font");
+        loadFontBtn.addActionListener(e -> loadCustomFont());
+
+        JButton themeBtn = new JButton("Toggle Theme");
+        themeBtn.addActionListener(e -> {
+            darkMode = !darkMode;
+            applyTheme((JComponent) getContentPane(), darkMode);
+            // refresh background of main panels
+            Component[] comps = getContentPane().getComponents();
+            for (Component c : comps) if (c instanceof JComponent) ((JComponent) c).setBackground(darkMode ? new Color(18,18,18) : Color.WHITE);
+            repaint();
+        });
+
+        controlPanel.add(toggleFormatBtn);
+        controlPanel.add(toggleAnimBtn);
+        controlPanel.add(fullscreenBtn);
+        controlPanel.add(widgetBtn);
+        controlPanel.add(loadFontBtn);
+        controlPanel.add(themeBtn);
+    }
+
+    private void setupKeyBindings() {
+        // ESC to exit fullscreen or exit widget mode
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("ESCAPE"), "escape");
+        getRootPane().getActionMap().put("escape", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) {
+                if (fullscreen) toggleFullscreen();
+                else if (widgetMode) toggleWidgetMode();
+            }
+        });
+
+        // F to toggle fullscreen
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke('F'), "fullscreen");
+        getRootPane().getActionMap().put("fullscreen", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) {
+                toggleFullscreen();
+            }
+        });
+
+        // W for widget
+        getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke('W'), "widget");
+        getRootPane().getActionMap().put("widget", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) {
+                toggleWidgetMode();
+            }
+        });
+    }
+
+    private void addWidgetDragSupport() {
+        MouseAdapter ma = new MouseAdapter() {
+            @Override public void mousePressed(MouseEvent e) {
+                dragOffset = e.getPoint();
+            }
+            @Override public void mouseDragged(MouseEvent e) {
+                if (widgetMode) {
+                    Point p = getLocation();
+                    setLocation(p.x + e.getX() - dragOffset.x, p.y + e.getY() - dragOffset.y);
+                }
+            }
+        };
+        // Add to frame and labels so user can drag from anywhere
+        addMouseListener(ma);
+        addMouseMotionListener(ma);
+        timeLabel.addMouseListener(ma);
+        timeLabel.addMouseMotionListener(ma);
+        dateLabel.addMouseListener(ma);
+        dateLabel.addMouseMotionListener(ma);
+    }
+
+    private void initTimers() {
+        // Clock timer updates every 1s
+        clockTimer = new Timer(1000, e -> updateTimeNow());
+        clockTimer.setInitialDelay(0);
+        clockTimer.start();
+
+        // Animation timer (fast ticks for blinking/fade)
+        animationTimer = new Timer(50, e -> {
+            if (!animationOn) return;
+
+            // Blink colon every 500ms (by toggling every 10 ticks of 50ms -> 500ms)
+            long ticks = System.currentTimeMillis() / 50;
+            colonVisible = ((ticks / 10) % 2) == 0; // toggles every ~500ms
+
+            // Date fade oscillation between 0.4 and 1.0
+            dateAlpha += dateAlphaDelta;
+            if (dateAlpha <= 0.4f || dateAlpha >= 1.0f) dateAlphaDelta = -dateAlphaDelta;
+
+            // Apply animations (repaint time/date)
+            updateAnimatedDisplay();
+        });
+        animationTimer.start();
+    }
+
+    private void updateTimeNow() {
+        LocalDateTime now = LocalDateTime.now();
+        String timeStr = now.format(is24Hour ? timeFormat24 : timeFormat12);
+
+        // If using 12-hour and we want blinking colon, we must preserve AM/PM suffix.
+        if (!colonVisible) {
+            // Replace colons with space for blink effect, keep AM/PM
+            if (is24Hour) timeStr = timeStr.replace(':', ' ');
+            else {
+                // For 12 hour format: split AM/PM part if present
+                String suffix = "";
+                if (timeStr.endsWith(" AM") || timeStr.endsWith(" PM")) {
+                    suffix = timeStr.substring(timeStr.length() - 3);
+                    timeStr = timeStr.substring(0, timeStr.length() - 3);
+                }
+                timeStr = timeStr.replace(':', ' ') + suffix;
+            }
+        }
+        timeLabel.setText(timeStr);
+        dateLabel.setText(now.format(dateFormat));
+    }
+
+    // Apply alpha fade to date label by setting a semi-transparent foreground
+    private void updateAnimatedDisplay() {
+        // Time update: we call updateTimeNow() less frequently already (every second), here we only reapply blinking effect
+        // But to keep time precise, call updateTimeNow() every second via clockTimer (already set).
+        // For the colon blink we already update timeLabel's text using updateTimeNow() each second; but since we want blink within seconds
+        // we directly modify displayed string here to avoid waiting.
+        SwingUtilities.invokeLater(() -> {
+            // Manipulate displayed text for colon blink (without forcing new LocalDateTime)
+            String displayed = timeLabel.getText();
+            if (displayed != null) {
+                // If colonVisible false, blanks already applied in updateTimeNow when seconds ticked.
+                if (!colonVisible) {
+                    displayed = displayed.replace(':', ' ');
+                } else {
+                    // If colon should be visible but previously replaced, we restore using real-time (to ensure correctness)
+                    updateTimeNow();
+                }
+                timeLabel.setText(displayed);
+            }
+
+            // Date fade effect by changing the foreground color with alpha
+            Color base = darkMode ? Color.LIGHT_GRAY : Color.DARK_GRAY;
+            // Compose color with alpha
+            int alpha = Math.max(40, Math.min(255, (int) (dateAlpha * 255)));
+            Color c = new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
+            dateLabel.setForeground(c);
+        });
+    }
+
+    private void toggleFullscreen() {
+        fullscreen = !fullscreen;
+        dispose(); // need to dispose to change undecorated state sometimes
+        setUndecorated(fullscreen || widgetMode);
+        setVisible(true);
+
+        if (fullscreen) {
+            setExtendedState(JFrame.MAXIMIZED_BOTH);
+            setAlwaysOnTop(false);
+        } else {
+            setExtendedState(JFrame.NORMAL);
+        }
+    }
+
+    private void toggleWidgetMode() {
+        widgetMode = !widgetMode;
+        dispose();
+        setUndecorated(widgetMode);
+        setAlwaysOnTop(widgetMode);
+        setVisible(true);
+
+        if (widgetMode) {
+            // smaller footprint, compact fonts
+            setSize(260, 120);
+            timeLabel.setFont(clockFont.deriveFont(32f));
+            dateLabel.setFont(clockFont.deriveFont(12f));
+            // Add slight transparency to window if supported
+            try { setOpacity(0.92f); } catch (Exception ignored) {}
+        } else {
+            // restore
+            setSize(520, 260);
+            timeLabel.setFont(clockFont.deriveFont(64f));
+            dateLabel.setFont(clockFont.deriveFont(20f));
+            try { setOpacity(1.0f); } catch (Exception ignored) {}
+        }
+        setLocationRelativeTo(null);
+    }
+
+    private void loadCustomFont() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setAcceptAllFileFilterUsed(false);
+        chooser.setFileFilter(new FileNameExtensionFilter("TrueType Font (ttf)", "ttf"));
+        int ret = chooser.showOpenDialog(this);
+        if (ret == JFileChooser.APPROVE_OPTION) {
+            File f = chooser.getSelectedFile();
+            try (FileInputStream fis = new FileInputStream(f)) {
+                Font custom = Font.createFont(Font.TRUETYPE_FONT, fis).deriveFont(Font.BOLD, 64f);
+                GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
+                ge.registerFont(custom);
+                clockFont = custom;
+                // apply to labels with sizes appropriate for current mode
+                if (widgetMode) {
+                    timeLabel.setFont(clockFont.deriveFont(32f));
+                    dateLabel.setFont(clockFont.deriveFont(12f));
+                } else {
+                    timeLabel.setFont(clockFont.deriveFont(64f));
+                    dateLabel.setFont(clockFont.deriveFont(20f));
+                }
+                JOptionPane.showMessageDialog(this, "Font loaded: " + f.getName());
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                JOptionPane.showMessageDialog(this, "Failed to load font: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        // Ensure GUI is created on EDT
+        SwingUtilities.invokeLater(() -> {
+            try {
+                // Set a nicer look & feel (optional)
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception ignored) {}
+            new AdvancedDigitalClock();
+        });
+    }
+}
